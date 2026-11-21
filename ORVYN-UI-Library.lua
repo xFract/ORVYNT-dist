@@ -19971,6 +19971,21 @@ return function(ctx)
 		return "That key was not accepted."
 	end
 
+	-- Codes that mean the key itself is dead, so a saved copy is worth discarding.
+	-- Transient failures (no response, a rate limit) and configuration problems
+	-- (SERVICE_NOT_FOUND) are deliberately absent: clearing the key there would
+	-- make the user retype something that was never the problem.
+	local deadKeyErrors = {
+		KEY_INVALID = true,
+		KEY_EXPIRED = true,
+		KEY_INVALIDATED = true,
+		ALREADY_USED = true,
+		HWID_MISMATCH = true,
+		HWID_BANNED = true,
+		SERVICE_MISMATCH = true,
+		PREMIUM_REQUIRED = true,
+	}
+
 	local function fileApiAvailable()
 		return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
 	end
@@ -20084,7 +20099,10 @@ return function(ctx)
 			Icon = options.Icon,
 			Folder = options.Folder or "ORVYN",
 			Remember = options.Remember ~= false,
-			AutoResume = options.AutoResume ~= false,
+			-- true skips the card on a saved key, "validate" skips it only when the key
+			-- still passes, false always shows the card. The string has to survive this
+			-- line, so it is checked before the boolean coercion.
+			AutoResume = options.AutoResume == "validate" and "validate" or options.AutoResume ~= false,
 			Service = options.Service,
 			Identifier = options.Identifier,
 			Provider = options.Provider,
@@ -20146,6 +20164,8 @@ return function(ctx)
 		end))
 	end
 
+	-- Returns valid, message, result, code. The raw code is what lets a silent
+	-- resume tell a dead key from a temporary network failure.
 	function KeySystem:_validate(key)
 		local mode = self.Validate
 		if type(mode) == "function" then
@@ -20183,7 +20203,7 @@ return function(ctx)
 		if result.valid then
 			return true, nil, result
 		end
-		return false, describeError(result.error)
+		return false, describeError(result.error), nil, result.error
 	end
 
 	function KeySystem:_requestLink()
@@ -20580,15 +20600,30 @@ return function(ctx)
 			return self._result
 		end
 		self._prompting = true
-		-- A remembered key skips the card without a network check: JNKIE's own guidance is
-		-- to let the protected loader make the final call, and check_key can record a first
-		-- use that the loader would then reject.
+		-- AutoResume = true returns a remembered key without a network check: JNKIE's own
+		-- guidance is to let the protected loader make the final call, and check_key can
+		-- record a first use that the loader would then reject.
+		--
+		-- AutoResume = "validate" checks first, so a key that no longer works falls back to
+		-- the card instead of failing inside the loader. A dead key is discarded; a
+		-- transient failure keeps it, because retyping would not fix the network.
 		if self.AutoResume then
 			local saved = self:Read()
 			if saved then
-				self._resolved = true
-				self._result = saved
-				return saved
+				if self.AutoResume ~= "validate" then
+					self._resolved = true
+					self._result = saved
+					return saved
+				end
+				local valid, _, _, code = self:_validate(saved)
+				if valid then
+					self._resolved = true
+					self._result = saved
+					return saved
+				end
+				if code and deadKeyErrors[code] then
+					self:Forget()
+				end
 			end
 		end
 		self:_build()
