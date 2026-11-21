@@ -20468,9 +20468,9 @@ return function(ctx)
 			}
 		)
 		-- A CanvasGroup clips at its own bounds, and a UIStroke draws half its width
-		-- outside the frame. Without this inset the left and right borders of the input
-		-- field and the toggle row are shaved off where they meet the page edge.
-		addPadding(keyPage, Space.Hairline, Space.Hairline, 0, 0)
+		-- outside the frame. Without this inset the borders of the input field, the
+		-- toggle row and the buttons are shaved off where they meet the page edge.
+		addPadding(keyPage, Space.Hairline, Space.Hairline, Space.Hairline, Space.Hairline)
 		create(
 			"UIListLayout",
 			{
@@ -20710,7 +20710,7 @@ return function(ctx)
 					Parent = pageHost,
 				}
 			)
-			addPadding(settingsPage, Space.Hairline, Space.Hairline, 0, 0)
+			addPadding(settingsPage, Space.Hairline, Space.Hairline, Space.Hairline, Space.Hairline)
 			create(
 				"UIListLayout",
 				{
