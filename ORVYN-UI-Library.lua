@@ -19912,6 +19912,7 @@ return function(ctx)
 	local createLabel = ctx.UI.createLabel
 	local getGuiRoot = ctx.UI.getGuiRoot
 	local safeCall = ctx.UI.safeCall
+	local setIcon = ctx.Icons.setIcon
 	local tween = ctx.UI.tween
 
 	local SDK_URL = "https://jnkie.com/sdk/library.lua"
@@ -20102,7 +20103,10 @@ return function(ctx)
 			-- true skips the card on a saved key, "validate" skips it only when the key
 			-- still passes, false always shows the card. The string has to survive this
 			-- line, so it is checked before the boolean coercion.
+			AutoResumeMode = options.AutoResume == "validate" and "validate" or options.AutoResume ~= false,
+			-- Effective mode. The card's settings toggle overrides it from the saved file.
 			AutoResume = options.AutoResume == "validate" and "validate" or options.AutoResume ~= false,
+			SkipWhenValid = options.AutoResume ~= false,
 			Service = options.Service,
 			Identifier = options.Identifier,
 			Provider = options.Provider,
@@ -20127,6 +20131,58 @@ return function(ctx)
 
 	function KeySystem:_path()
 		return self.Folder .. "/keysystem.txt"
+	end
+
+	function KeySystem:_settingsPath()
+		return self.Folder .. "/keysystem-settings.txt"
+	end
+
+	-- A flat key=value list rather than a single flag, so a second preference does not
+	-- need a second file. Unknown keys are ignored, which keeps old files readable.
+	function KeySystem:ReadSettings()
+		local settings = {}
+		if not fileApiAvailable() then
+			return settings
+		end
+		local ok, body = pcall(function()
+			return isfile(self:_settingsPath()) and readfile(self:_settingsPath()) or nil
+		end)
+		if not ok or type(body) ~= "string" then
+			return settings
+		end
+		for line in body:gmatch("[^\r\n]+") do
+			local name, value = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+			if name then
+				settings[name] = value
+			end
+		end
+		return settings
+	end
+
+	function KeySystem:SaveSettings(settings)
+		if not fileApiAvailable() or type(settings) ~= "table" then
+			return false
+		end
+		local lines = {}
+		for name, value in pairs(settings) do
+			table.insert(lines, tostring(name) .. "=" .. tostring(value))
+		end
+		table.sort(lines)
+		return (pcall(function()
+			ensureFolder(self.Folder)
+			writefile(self:_settingsPath(), table.concat(lines, "\n"))
+		end))
+	end
+
+	-- The card's toggle is a user preference, so it outranks the constructor value but
+	-- cannot invent a mode the caller disabled: AutoResume = false stays off.
+	function KeySystem:_applySavedSettings()
+		local saved = self:ReadSettings().SkipWhenValid
+		if saved == nil then
+			return
+		end
+		self.SkipWhenValid = saved == "1"
+		self.AutoResume = self.SkipWhenValid and self.AutoResumeMode or false
 	end
 
 	function KeySystem:Read()
@@ -20324,7 +20380,7 @@ return function(ctx)
 		local header = create(
 			"Frame",
 			{
-				Size = UDim2.new(1, 0, 0, 22),
+				Size = UDim2.new(1, 0, 0, 24),
 				BackgroundTransparency = 1,
 				LayoutOrder = 1,
 				Parent = content,
@@ -20335,14 +20391,90 @@ return function(ctx)
 			createIcon(header, self.Icon, Theme.Accent, UDim2.new(0, 0, 0.5, 0))
 			titleOffset = 24
 		end
-		createLabel({
+		-- One button, two jobs: it opens the settings page and comes back from it. Only
+		-- the icon and the title change, so the header itself stays put.
+		local pageButton = nil
+		local pageIcon = nil
+		if self.AutoResumeMode ~= false then
+			pageButton = create(
+				"TextButton",
+				{
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, 0, 0.5, 0),
+					Name = "Settings",
+					Size = UDim2.fromOffset(24, 24),
+					BackgroundColor3 = Theme.Surface2,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					Parent = header,
+				}
+			)
+			addCorner(pageButton, UDim.new(0, Radius.Small))
+			pageIcon = create(
+				"ImageLabel",
+				{
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.fromOffset(14, 14),
+					BackgroundTransparency = 1,
+					ImageColor3 = Theme.Muted,
+					ScaleType = Enum.ScaleType.Fit,
+					Parent = pageButton,
+				}
+			)
+			setIcon(pageIcon, "settings")
+			pageButton.MouseEnter:Connect(function()
+				tween(pageButton, { BackgroundTransparency = 0 }, Motion.Fast)
+				tween(pageIcon, { ImageColor3 = Theme.Accent }, Motion.Fast)
+			end)
+			pageButton.MouseLeave:Connect(function()
+				tween(pageButton, { BackgroundTransparency = 1 }, Motion.Calm)
+				tween(pageIcon, { ImageColor3 = Theme.Muted }, Motion.Calm)
+			end)
+		end
+		local titleLabel = createLabel({
 			Position = UDim2.fromOffset(titleOffset, 0),
-			Size = UDim2.new(1, -titleOffset, 1, 0),
+			Size = UDim2.new(1, -titleOffset - (pageButton and 28 or 0), 1, 0),
 			Text = self.Title,
 			TextSize = Type.Heading,
 			FontFace = Fonts.Bold,
 			Parent = header,
 		})
+		-- Both pages share one slot and only one is visible, so the card is as tall as
+		-- the page you are looking at. CanvasGroup is what makes the swap a fade rather
+		-- than a pop: GroupTransparency covers every descendant at once.
+		local pageHost = create(
+			"Frame",
+			{
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				ClipsDescendants = true,
+				LayoutOrder = 2,
+				Parent = content,
+			}
+		)
+		local keyPage = create(
+			"CanvasGroup",
+			{
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Parent = pageHost,
+			}
+		)
+		create(
+			"UIListLayout",
+			{
+				FillDirection = Enum.FillDirection.Vertical,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, Space.Cozy),
+				Parent = keyPage,
+			}
+		)
 		createLabel({
 			Size = UDim2.new(1, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
@@ -20353,8 +20485,8 @@ return function(ctx)
 			TextWrapped = true,
 			TextTruncate = Enum.TextTruncate.None,
 			TextYAlignment = Enum.TextYAlignment.Top,
-			LayoutOrder = 2,
-			Parent = content,
+			LayoutOrder = 1,
+			Parent = keyPage,
 		})
 		local inputFrame = create(
 			"Frame",
@@ -20362,8 +20494,8 @@ return function(ctx)
 				Size = UDim2.new(1, 0, 0, 38),
 				BackgroundColor3 = Theme.Surface,
 				BorderSizePixel = 0,
-				LayoutOrder = 3,
-				Parent = content,
+				LayoutOrder = 2,
+				Parent = keyPage,
 			}
 		)
 		addCorner(inputFrame, UDim.new(0, Radius.Small))
@@ -20372,7 +20504,7 @@ return function(ctx)
 		local input = create(
 			"TextBox",
 			{
-				Size = UDim2.fromScale(1, 1),
+				Size = UDim2.new(1, -28, 1, 0),
 				BackgroundTransparency = 1,
 				Text = "",
 				PlaceholderText = self.Placeholder,
@@ -20387,11 +20519,98 @@ return function(ctx)
 			}
 		)
 		self._input = input
+		-- Roblox has no password field, so hiding means swapping the displayed text for
+		-- bullets while the real key lives in _keyText. Editing needs the real text, so
+		-- focusing reveals it and hiding again releases focus first.
+		local eyeButton = create(
+			"TextButton",
+			{
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, 0, 0.5, 0),
+				Name = "RevealKey",
+				Size = UDim2.fromOffset(26, 26),
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				Parent = inputFrame,
+			}
+		)
+		local eyeIcon = create(
+			"ImageLabel",
+			{
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(15, 15),
+				BackgroundTransparency = 1,
+				ImageColor3 = Theme.Muted,
+				ScaleType = Enum.ScaleType.Fit,
+				Parent = eyeButton,
+			}
+		)
+		self._keyText = ""
+		self._masked = true
+		-- The field holds either the real key or the bullets we wrote. Comparing against
+		-- the last mask tells the two apart without trusting a property-changed signal,
+		-- which Roblox can deliver a frame late and which would then mask stale text.
+		local maskText = nil
+		local function showText(text)
+			input.Text = text
+		end
+		local function paintEye()
+			setIcon(eyeIcon, self._masked and "eye-off" or "eye")
+		end
+		local function syncKey()
+			if input.Text ~= maskText then
+				self._keyText = input.Text
+			end
+		end
+		local function applyMask()
+			syncKey()
+			if not self._masked or input:IsFocused() then
+				maskText = nil
+				showText(self._keyText)
+				return
+			end
+			local length = #self._keyText
+			maskText = length > 0 and string.rep("•", length) or ""
+			showText(maskText)
+		end
+		self._applyMask = applyMask
+		self._syncKey = syncKey
+		paintEye()
+		-- Text that lands while the field is unfocused and hidden would otherwise stay
+		-- readable. applyMask adopts the current text first, so a late signal cannot
+		-- mask a stale string, and writing the mask back re-enters here as a no-op.
+		input:GetPropertyChangedSignal("Text"):Connect(function()
+			if not self._masked or input:IsFocused() or input.Text == maskText then
+				return
+			end
+			applyMask()
+		end)
+		eyeButton.MouseEnter:Connect(function()
+			tween(eyeIcon, { ImageColor3 = Theme.Text }, Motion.Fast)
+		end)
+		eyeButton.MouseLeave:Connect(function()
+			tween(eyeIcon, { ImageColor3 = Theme.Muted }, Motion.Calm)
+		end)
+		eyeButton.MouseButton1Click:Connect(function()
+			self._masked = not self._masked
+			paintEye()
+			if self._masked and input:IsFocused() then
+				pcall(function()
+					input:ReleaseFocus()
+				end)
+			end
+			applyMask()
+		end)
 		input.Focused:Connect(function()
 			tween(inputStroke, { Color = Theme.StrokeHover }, Motion.Quick)
+			applyMask()
 		end)
 		input.FocusLost:Connect(function(enterPressed)
 			tween(inputStroke, { Color = Theme.Stroke }, Motion.Quick)
+			applyMask()
 			if enterPressed then
 				self:_submitKey()
 			end
@@ -20407,8 +20626,8 @@ return function(ctx)
 			TextTruncate = Enum.TextTruncate.None,
 			TextYAlignment = Enum.TextYAlignment.Top,
 			Visible = false,
-			LayoutOrder = 4,
-			Parent = content,
+			LayoutOrder = 3,
+			Parent = keyPage,
 		})
 		self._status = status
 		local link = createLabel({
@@ -20422,8 +20641,8 @@ return function(ctx)
 			TextTruncate = Enum.TextTruncate.None,
 			TextYAlignment = Enum.TextYAlignment.Top,
 			Visible = false,
-			LayoutOrder = 5,
-			Parent = content,
+			LayoutOrder = 4,
+			Parent = keyPage,
 		})
 		self._link = link
 		local row = create(
@@ -20431,8 +20650,8 @@ return function(ctx)
 			{
 				Size = UDim2.new(1, 0, 0, 34),
 				BackgroundTransparency = 1,
-				LayoutOrder = 6,
-				Parent = content,
+				LayoutOrder = 5,
+				Parent = keyPage,
 			}
 		)
 		create(
@@ -20472,9 +20691,210 @@ return function(ctx)
 				self:_submitKey()
 			end,
 		})
+		local settingsPage = nil
+		if pageButton then
+			settingsPage = create(
+				"CanvasGroup",
+				{
+					Size = UDim2.new(1, 0, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Visible = false,
+					GroupTransparency = 1,
+					Parent = pageHost,
+				}
+			)
+			create(
+				"UIListLayout",
+				{
+					FillDirection = Enum.FillDirection.Vertical,
+					SortOrder = Enum.SortOrder.LayoutOrder,
+					Padding = UDim.new(0, Space.Cozy),
+					Parent = settingsPage,
+				}
+			)
+			createLabel({
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Text = "Preferences for this key screen.",
+				TextSize = Type.Body,
+				FontFace = Fonts.Regular,
+				TextColor3 = Theme.Muted,
+				TextWrapped = true,
+				TextTruncate = Enum.TextTruncate.None,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				LayoutOrder = 1,
+				Parent = settingsPage,
+			})
+			-- The row is the button, not the pill. A 24x14 button would be grown to the
+			-- 32px minimum tap target and lose its shape, which is why the library's own
+			-- Toggle control makes the whole row clickable too.
+			local toggleRow = create(
+				"TextButton",
+				{
+					Name = "SkipWhenValidRow",
+					Size = UDim2.new(1, 0, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
+					BackgroundColor3 = Theme.Surface,
+					BorderSizePixel = 0,
+					Text = "",
+					AutoButtonColor = false,
+					LayoutOrder = 2,
+					Parent = settingsPage,
+				}
+			)
+			addCorner(toggleRow, UDim.new(0, Radius.Small))
+			local toggleStroke = addStroke(toggleRow, Theme.Stroke)
+			addPadding(toggleRow, Space.Cozy, Space.Cozy, Space.Cozy, Space.Cozy)
+			local toggleText = create(
+				"Frame",
+				{
+					Size = UDim2.new(1, -40, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
+					BackgroundTransparency = 1,
+					Parent = toggleRow,
+				}
+			)
+			create(
+				"UIListLayout",
+				{
+					FillDirection = Enum.FillDirection.Vertical,
+					SortOrder = Enum.SortOrder.LayoutOrder,
+					Padding = UDim.new(0, 2),
+					Parent = toggleText,
+				}
+			)
+			createLabel({
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Text = "Skip when my key works",
+				TextSize = Type.Body,
+				FontFace = Fonts.Medium,
+				TextWrapped = true,
+				TextTruncate = Enum.TextTruncate.None,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				LayoutOrder = 1,
+				Parent = toggleText,
+			})
+			createLabel({
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Text = "Checked once on launch. Off always shows this card.",
+				TextSize = Type.Caption,
+				FontFace = Fonts.Regular,
+				TextColor3 = Theme.Muted,
+				TextWrapped = true,
+				TextTruncate = Enum.TextTruncate.None,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				LayoutOrder = 2,
+				Parent = toggleText,
+			})
+			-- Matches the library's Toggle control as it actually renders: that one is a
+			-- 36x20 pill inside a window scaled to 0.89, so it lands at 32x18. The card
+			-- applies no such scale, so the numbers here are the rendered ones.
+			local toggle = create(
+				"Frame",
+				{
+					AnchorPoint = Vector2.new(1, 0),
+					Position = UDim2.new(1, 0, 0, 1),
+					Name = "SkipWhenValid",
+					Size = UDim2.fromOffset(32, 18),
+					BackgroundColor3 = Theme.Surface3,
+					BorderSizePixel = 0,
+					Parent = toggleRow,
+				}
+			)
+			addCorner(toggle, UDim.new(1, 0))
+			addStroke(toggle, Theme.Stroke)
+			local knob = create(
+				"Frame",
+				{
+					AnchorPoint = Vector2.new(0, 0.5),
+					Position = UDim2.new(0, 3, 0.5, 0),
+					Size = UDim2.fromOffset(13, 13),
+					BackgroundColor3 = Theme.Muted,
+					BorderSizePixel = 0,
+					Parent = toggle,
+				}
+			)
+			addCorner(knob, UDim.new(1, 0))
+			local function paintToggle(on)
+				tween(toggle, { BackgroundColor3 = on and Theme.Accent or Theme.Surface3 }, Motion.Calm)
+				tween(
+					knob,
+					{
+						Position = on and UDim2.new(0, 16, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+						BackgroundColor3 = on and Theme.AccentDark or Theme.Muted,
+					},
+					Motion.Calm,
+					Enum.EasingStyle.Back
+				)
+			end
+			paintToggle(self.SkipWhenValid)
+			toggleRow.MouseEnter:Connect(function()
+				tween(toggleStroke, { Color = Theme.StrokeHover }, Motion.Fast)
+			end)
+			toggleRow.MouseLeave:Connect(function()
+				tween(toggleStroke, { Color = Theme.Stroke }, Motion.Calm)
+			end)
+			toggleRow.MouseButton1Click:Connect(function()
+				self.SkipWhenValid = not self.SkipWhenValid
+				paintToggle(self.SkipWhenValid)
+				self:SaveSettings({ SkipWhenValid = self.SkipWhenValid and "1" or "0" })
+			end)
+		end
+		local pages = { key = keyPage, settings = settingsPage }
+		self._page = "key"
+		-- Fade the page you are leaving, then swap and fade the new one in. That order
+		-- keeps the card from being as tall as both pages at once.
+		local function showPage(name, animate)
+			local to = pages[name]
+			if not to or self._page == name then
+				return
+			end
+			local from = pages[self._page]
+			self._page = name
+			titleLabel.Text = name == "settings" and "Settings" or self.Title
+			if pageIcon then
+				setIcon(pageIcon, name == "settings" and "arrow-left" or "settings")
+			end
+			if input:IsFocused() then
+				pcall(function()
+					input:ReleaseFocus()
+				end)
+			end
+			if not animate or not from then
+				if from then
+					from.Visible = false
+					from.GroupTransparency = 1
+				end
+				to.Visible = true
+				to.GroupTransparency = 0
+				return
+			end
+			tween(from, { GroupTransparency = 1 }, Motion.Fast)
+			task.delay(Motion.Fast, function()
+				if self._destroyed then
+					return
+				end
+				from.Visible = false
+				to.Visible = true
+				to.GroupTransparency = 1
+				tween(to, { GroupTransparency = 0 }, Motion.Base)
+			end)
+		end
+		self._showPage = showPage
+		if pageButton then
+			pageButton.MouseButton1Click:Connect(function()
+				showPage(self._page == "key" and "settings" or "key", true)
+			end)
+		end
 		local saved = self:Read()
 		if saved then
+			self._keyText = saved
 			input.Text = saved
+			applyMask()
 		end
 		tween(backdrop, { BackgroundTransparency = 0.45 }, Motion.Calm)
 		tween(card, { BackgroundTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, Motion.Slow, Enum.EasingStyle.Quint)
@@ -20488,12 +20908,15 @@ return function(ctx)
 			end
 		end)
 	end
-
 	function KeySystem:_submitKey()
 		if self._busy or self._resolved or not self._input then
 			return
 		end
-		local key = (self._input.Text or ""):match("^%s*(.-)%s*$")
+		-- The field may hold text typed since the last mask, so read it before trimming.
+		if self._syncKey then
+			self._syncKey()
+		end
+		local key = (self._keyText or ""):match("^%s*(.-)%s*$")
 		if key == "" then
 			self:_setStatus("Enter a key first.", "Error")
 			return
@@ -20600,6 +21023,8 @@ return function(ctx)
 			return self._result
 		end
 		self._prompting = true
+		-- The card's toggle is a user preference, so it is read before the resume check.
+		self:_applySavedSettings()
 		-- AutoResume = true returns a remembered key without a network check: JNKIE's own
 		-- guidance is to let the protected loader make the final call, and check_key can
 		-- record a first use that the loader would then reject.
