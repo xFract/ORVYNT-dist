@@ -19886,6 +19886,719 @@ return function(ctx)
 	end
 end
 	end)()
+	-- src/window/keysystem.lua
+	modules["window/keysystem"] = (function()
+-- Key system gate: a standalone ORVYN card that collects a key, optionally checks it
+-- through the JNKIE public SDK, and remembers it between sessions.
+--
+-- The gate is deliberately not a Window: JNKIE's inline-UI mode runs this code before
+-- the protected script, so there is no window to attach a tab to yet. Prompt() yields
+-- until the user submits or cancels, which is the contract that mode expects.
+return function(ctx)
+	local Type = ctx.Type
+	local Radius = ctx.Radius
+	local Motion = ctx.Motion
+	local Space = ctx.Space
+	local Fonts = ctx.Fonts
+	local Theme = ctx.Theme
+	local Library = ctx.Library
+	local UserInputService = ctx.Services.UserInputService
+	local copyToClipboard = ctx.Env.copyToClipboard
+	local addCorner = ctx.UI.addCorner
+	local addPadding = ctx.UI.addPadding
+	local addStroke = ctx.UI.addStroke
+	local create = ctx.UI.create
+	local createIcon = ctx.UI.createIcon
+	local createLabel = ctx.UI.createLabel
+	local getGuiRoot = ctx.UI.getGuiRoot
+	local safeCall = ctx.UI.safeCall
+	local tween = ctx.UI.tween
+
+	local SDK_URL = "https://jnkie.com/sdk/library.lua"
+	local sdkCache = nil
+
+	local function loadSdk()
+		if sdkCache then
+			return sdkCache
+		end
+		local ok, body = pcall(function()
+			return game:HttpGet(SDK_URL)
+		end)
+		if not ok or type(body) ~= "string" or body == "" then
+			return nil, "Could not download the key SDK."
+		end
+		local chunk, compileError = loadstring(body)
+		if not chunk then
+			return nil, "Could not compile the key SDK: " .. tostring(compileError)
+		end
+		local okRun, sdk = pcall(chunk)
+		if not okRun or type(sdk) ~= "table" then
+			return nil, "Could not start the key SDK."
+		end
+		sdkCache = sdk
+		return sdk
+	end
+
+	-- JNKIE returns short codes rather than sentences, so the gate owns the wording.
+	-- Anything unlisted falls back to a neutral line instead of showing a raw code.
+	local errorMessages = {
+		KEY_INVALID = "That key was not accepted.",
+		KEY_EXPIRED = "This key has expired.",
+		KEY_INVALIDATED = "This key has been disabled.",
+		ALREADY_USED = "This key has already been used.",
+		HWID_MISMATCH = "This key is bound to another device.",
+		HWID_BANNED = "This device is blocked.",
+		SERVICE_MISMATCH = "This key belongs to a different service.",
+		SERVICE_NOT_FOUND = "The key service is unavailable.",
+		PREMIUM_REQUIRED = "This key needs Premium access.",
+		ERROR = "Could not reach the key service.",
+		RATE_LIMITTED = "Too many attempts. Wait a moment.",
+	}
+
+	local function describeError(code)
+		code = tostring(code or "")
+		local known = errorMessages[code]
+		if known then
+			return known
+		end
+		local status = code:match("^http (%d+)$")
+		if status then
+			if status == "429" then
+				return errorMessages.RATE_LIMITTED
+			end
+			return "The key service rejected the request (" .. status .. ")."
+		end
+		return "That key was not accepted."
+	end
+
+	local function fileApiAvailable()
+		return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+	end
+
+	local function ensureFolder(path)
+		if type(isfolder) ~= "function" or type(makefolder) ~= "function" then
+			return
+		end
+		local built = ""
+		for part in tostring(path):gmatch("[^/\\]+") do
+			built = built == "" and part or built .. "/" .. part
+			if not isfolder(built) then
+				makefolder(built)
+			end
+		end
+	end
+
+	local function makeButton(parent, options)
+		local primary = options.Variant == "Primary"
+		local restFill = primary and 0.12 or 0
+		local restStroke = primary and 0.4 or 0
+		local button = create(
+			"TextButton",
+			{
+				Size = UDim2.fromOffset(0, 34),
+				AutomaticSize = Enum.AutomaticSize.X,
+				BackgroundColor3 = primary and Theme.Accent or Theme.Surface2,
+				BackgroundTransparency = restFill,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				ClipsDescendants = true,
+				LayoutOrder = options.LayoutOrder or 0,
+				Parent = parent,
+			}
+		)
+		addCorner(button, UDim.new(0, Radius.Medium))
+		local stroke = addStroke(button, primary and Theme.Accent or Theme.Stroke, restStroke, 1)
+		addPadding(button, Space.Loose, Space.Loose)
+		local label = createLabel({
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Text = options.Text or "OK",
+			TextSize = Type.Body,
+			FontFace = Fonts.Medium,
+			TextColor3 = primary and Theme.AccentDark or Theme.Text,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			Parent = button,
+		})
+		local enabled = true
+		local function paint()
+			tween(button, { BackgroundTransparency = enabled and restFill or 0.6 }, Motion.Fast)
+			tween(label, { TextTransparency = enabled and 0 or 0.5 }, Motion.Fast)
+			tween(stroke, { Transparency = enabled and restStroke or 0.7 }, Motion.Fast)
+		end
+		button.MouseEnter:Connect(function()
+			if not enabled then
+				return
+			end
+			if primary then
+				tween(button, { BackgroundTransparency = 0 }, Motion.Fast)
+				tween(stroke, { Transparency = 0 }, Motion.Fast)
+			else
+				tween(stroke, { Color = Theme.StrokeHover }, Motion.Fast)
+			end
+		end)
+		button.MouseLeave:Connect(function()
+			if not enabled then
+				return
+			end
+			if primary then
+				tween(button, { BackgroundTransparency = restFill }, Motion.Calm)
+				tween(stroke, { Transparency = restStroke }, Motion.Calm)
+			else
+				tween(stroke, { Color = Theme.Stroke }, Motion.Calm)
+			end
+		end)
+		button.MouseButton1Click:Connect(function()
+			if not enabled then
+				return
+			end
+			safeCall(options.Callback)
+		end)
+		local api = { Instance = button }
+		function api.SetEnabled(value)
+			enabled = value == true
+			paint()
+		end
+		function api.SetText(value)
+			label.Text = tostring(value)
+		end
+		function api.SetVisible(value)
+			button.Visible = value == true
+		end
+		return api
+	end
+
+	local KeySystem = {}
+	KeySystem.__index = KeySystem
+	ctx.KeySystem = KeySystem
+
+	function Library:KeySystem(options)
+		options = options or {}
+		local self = setmetatable({
+			Title = options.Title or "Key System",
+			Subtitle = options.Subtitle or options.Content or "Enter your key to continue.",
+			Placeholder = options.Placeholder or "Paste your key",
+			SubmitText = options.SubmitText or "Continue",
+			CancelText = options.CancelText or "Cancel",
+			GetKeyText = options.GetKeyText or "Get Key",
+			Icon = options.Icon,
+			Folder = options.Folder or "ORVYN",
+			Remember = options.Remember ~= false,
+			AutoResume = options.AutoResume ~= false,
+			Service = options.Service,
+			Identifier = options.Identifier,
+			Provider = options.Provider,
+			ScriptId = options.ScriptId,
+			GetKeyUrl = options.GetKeyUrl,
+			Validate = options.Validate,
+			OnSubmit = options.OnSubmit,
+			OnCancel = options.OnCancel,
+			_result = nil,
+			_resolved = false,
+			_prompting = false,
+			_busy = false,
+			_destroyed = false,
+		}, KeySystem)
+		-- Configuring a service is the signal that validation should happen; callers who
+		-- want a plain gate leave Service nil and get the accept-any-key path.
+		if self.Validate == nil then
+			self.Validate = self.Service ~= nil and "jnkie" or false
+		end
+		return self
+	end
+
+	function KeySystem:_path()
+		return self.Folder .. "/keysystem.txt"
+	end
+
+	function KeySystem:Read()
+		if not self.Remember or not fileApiAvailable() then
+			return nil
+		end
+		local ok, value = pcall(function()
+			return isfile(self:_path()) and readfile(self:_path()) or nil
+		end)
+		if not ok or type(value) ~= "string" then
+			return nil
+		end
+		value = value:match("^%s*(.-)%s*$")
+		return value ~= "" and value or nil
+	end
+
+	function KeySystem:Save(key)
+		if not self.Remember or not fileApiAvailable() or type(key) ~= "string" or key == "" then
+			return false
+		end
+		return (pcall(function()
+			ensureFolder(self.Folder)
+			writefile(self:_path(), key)
+		end))
+	end
+
+	function KeySystem:Forget()
+		if not fileApiAvailable() or type(delfile) ~= "function" then
+			return false
+		end
+		return (pcall(function()
+			if isfile(self:_path()) then
+				delfile(self:_path())
+			end
+		end))
+	end
+
+	function KeySystem:_validate(key)
+		local mode = self.Validate
+		if type(mode) == "function" then
+			local ok, valid, message = pcall(mode, key)
+			if not ok then
+				return false, "Could not check the key. Try again."
+			end
+			if valid then
+				return true
+			end
+			return false, type(message) == "string" and message or "That key was not accepted."
+		end
+		if mode ~= "jnkie" then
+			return true
+		end
+		local sdk, sdkError = loadSdk()
+		if not sdk then
+			return false, sdkError
+		end
+		sdk.service = self.Service
+		sdk.identifier = self.Identifier
+		if self.Provider ~= nil then
+			sdk.provider = self.Provider
+		end
+		if self.ScriptId ~= nil then
+			sdk.script_id = self.ScriptId
+		end
+		local ok, result = pcall(sdk.check_key, key)
+		if not ok then
+			return false, "Could not reach the key service. Try again."
+		end
+		if type(result) ~= "table" then
+			return false, "The key service returned an unexpected response."
+		end
+		if result.valid then
+			return true, nil, result
+		end
+		return false, describeError(result.error)
+	end
+
+	function KeySystem:_requestLink()
+		if type(self.GetKeyUrl) == "string" and self.GetKeyUrl ~= "" then
+			return self.GetKeyUrl
+		end
+		if self.Service == nil or self.Identifier == nil or self.Provider == nil then
+			return nil, "No key link is configured."
+		end
+		local sdk, sdkError = loadSdk()
+		if not sdk then
+			return nil, sdkError
+		end
+		sdk.service = self.Service
+		sdk.identifier = self.Identifier
+		sdk.provider = self.Provider
+		local ok, link, err = pcall(sdk.get_key_link)
+		if not ok then
+			return nil, "Could not request a key link. Try again."
+		end
+		if link then
+			return link
+		end
+		return nil, describeError(err)
+	end
+
+	function KeySystem:_setStatus(text, kind)
+		local label = self._status
+		if not label then
+			return
+		end
+		local color = Theme.Muted
+		if kind == "Error" then
+			color = Theme.Error
+		elseif kind == "Success" then
+			color = Theme.Success
+		elseif kind == "Accent" then
+			color = Theme.Accent
+		end
+		label.Text = text or ""
+		label.TextColor3 = color
+		label.Visible = text ~= nil and text ~= ""
+	end
+
+	function KeySystem:_setBusy(value)
+		self._busy = value == true
+		for _, button in ipairs({ self._submit, self._cancel, self._getKey }) do
+			if button then
+				button.SetEnabled(not self._busy)
+			end
+		end
+		if self._input then
+			self._input.TextEditable = not self._busy
+		end
+	end
+
+	function KeySystem:_build()
+		local gui = create(
+			"ScreenGui",
+			{
+				Name = "ORVYNKeySystem",
+				IgnoreGuiInset = true,
+				ResetOnSpawn = false,
+				DisplayOrder = 1000,
+				ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+				Parent = getGuiRoot(),
+			}
+		)
+		self.Gui = gui
+		local backdrop = create(
+			"TextButton",
+			{
+				Size = UDim2.fromScale(1, 1),
+				BackgroundColor3 = Color3.new(0, 0, 0),
+				BackgroundTransparency = 1,
+				Text = "",
+				AutoButtonColor = false,
+				Parent = gui,
+			}
+		)
+		self._backdrop = backdrop
+		local card = create(
+			"Frame",
+			{
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(380, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundColor3 = Theme.Background,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Parent = gui,
+			}
+		)
+		self._card = card
+		addCorner(card, UDim.new(0, Radius.Large))
+		local cardStroke = addStroke(card, Theme.Stroke, 1)
+		local scale = create("UIScale", { Scale = 0.94, Parent = card })
+		local content = create(
+			"Frame",
+			{
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				Parent = card,
+			}
+		)
+		addPadding(content, Space.Section, Space.Section, Space.Section, Space.Section)
+		create(
+			"UIListLayout",
+			{
+				FillDirection = Enum.FillDirection.Vertical,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, Space.Cozy),
+				Parent = content,
+			}
+		)
+		local header = create(
+			"Frame",
+			{
+				Size = UDim2.new(1, 0, 0, 22),
+				BackgroundTransparency = 1,
+				LayoutOrder = 1,
+				Parent = content,
+			}
+		)
+		local titleOffset = 0
+		if self.Icon then
+			createIcon(header, self.Icon, Theme.Accent, UDim2.new(0, 0, 0.5, 0))
+			titleOffset = 24
+		end
+		createLabel({
+			Position = UDim2.fromOffset(titleOffset, 0),
+			Size = UDim2.new(1, -titleOffset, 1, 0),
+			Text = self.Title,
+			TextSize = Type.Heading,
+			FontFace = Fonts.Bold,
+			Parent = header,
+		})
+		createLabel({
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = self.Subtitle,
+			TextSize = Type.Body,
+			FontFace = Fonts.Regular,
+			TextColor3 = Theme.Muted,
+			TextWrapped = true,
+			TextTruncate = Enum.TextTruncate.None,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			LayoutOrder = 2,
+			Parent = content,
+		})
+		local inputFrame = create(
+			"Frame",
+			{
+				Size = UDim2.new(1, 0, 0, 38),
+				BackgroundColor3 = Theme.Surface,
+				BorderSizePixel = 0,
+				LayoutOrder = 3,
+				Parent = content,
+			}
+		)
+		addCorner(inputFrame, UDim.new(0, Radius.Small))
+		local inputStroke = addStroke(inputFrame, Theme.Stroke)
+		addPadding(inputFrame, Space.Cozy, Space.Cozy, 0, 0)
+		local input = create(
+			"TextBox",
+			{
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Text = "",
+				PlaceholderText = self.Placeholder,
+				PlaceholderColor3 = Theme.Muted,
+				TextColor3 = Theme.Text,
+				TextSize = Type.Body,
+				FontFace = Fonts.Regular,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				ClearTextOnFocus = false,
+				TextTruncate = Enum.TextTruncate.None,
+				Parent = inputFrame,
+			}
+		)
+		self._input = input
+		input.Focused:Connect(function()
+			tween(inputStroke, { Color = Theme.StrokeHover }, Motion.Quick)
+		end)
+		input.FocusLost:Connect(function(enterPressed)
+			tween(inputStroke, { Color = Theme.Stroke }, Motion.Quick)
+			if enterPressed then
+				self:_submitKey()
+			end
+		end)
+		local status = createLabel({
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = "",
+			TextSize = Type.Caption,
+			FontFace = Fonts.Regular,
+			TextColor3 = Theme.Muted,
+			TextWrapped = true,
+			TextTruncate = Enum.TextTruncate.None,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Visible = false,
+			LayoutOrder = 4,
+			Parent = content,
+		})
+		self._status = status
+		local link = createLabel({
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = "",
+			TextSize = Type.Caption,
+			FontFace = Fonts.Regular,
+			TextColor3 = Theme.Accent,
+			TextWrapped = true,
+			TextTruncate = Enum.TextTruncate.None,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Visible = false,
+			LayoutOrder = 5,
+			Parent = content,
+		})
+		self._link = link
+		local row = create(
+			"Frame",
+			{
+				Size = UDim2.new(1, 0, 0, 34),
+				BackgroundTransparency = 1,
+				LayoutOrder = 6,
+				Parent = content,
+			}
+		)
+		create(
+			"UIListLayout",
+			{
+				FillDirection = Enum.FillDirection.Horizontal,
+				HorizontalAlignment = Enum.HorizontalAlignment.Right,
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, Space.Base),
+				Parent = row,
+			}
+		)
+		local hasLink = (type(self.GetKeyUrl) == "string" and self.GetKeyUrl ~= "")
+			or (self.Service ~= nil and self.Identifier ~= nil and self.Provider ~= nil)
+		if hasLink then
+			self._getKey = makeButton(row, {
+				Text = self.GetKeyText,
+				LayoutOrder = 1,
+				Callback = function()
+					self:_getKeyLink()
+				end,
+			})
+		end
+		self._cancel = makeButton(row, {
+			Text = self.CancelText,
+			LayoutOrder = 2,
+			Callback = function()
+				self:Cancel()
+			end,
+		})
+		self._submit = makeButton(row, {
+			Text = self.SubmitText,
+			Variant = "Primary",
+			LayoutOrder = 3,
+			Callback = function()
+				self:_submitKey()
+			end,
+		})
+		local saved = self:Read()
+		if saved then
+			input.Text = saved
+		end
+		tween(backdrop, { BackgroundTransparency = 0.45 }, Motion.Calm)
+		tween(card, { BackgroundTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, Motion.Slow, Enum.EasingStyle.Quint)
+		tween(cardStroke, { Transparency = 0 }, Motion.Calm)
+		tween(scale, { Scale = 1 }, Motion.Enter, Enum.EasingStyle.Back)
+		task.defer(function()
+			if not self._destroyed and input.Parent then
+				pcall(function()
+					input:CaptureFocus()
+				end)
+			end
+		end)
+	end
+
+	function KeySystem:_submitKey()
+		if self._busy or self._resolved or not self._input then
+			return
+		end
+		local key = (self._input.Text or ""):match("^%s*(.-)%s*$")
+		if key == "" then
+			self:_setStatus("Enter a key first.", "Error")
+			return
+		end
+		self:_setBusy(true)
+		self:_setStatus("Checking the key...", "Accent")
+		task.spawn(function()
+			local valid, message = self:_validate(key)
+			if self._destroyed then
+				return
+			end
+			self:_setBusy(false)
+			if not valid then
+				self:_setStatus(message or "That key was not accepted.", "Error")
+				pcall(function()
+					self._input:CaptureFocus()
+				end)
+				return
+			end
+			self:_setStatus("Key accepted.", "Success")
+			self:Save(key)
+			self:_finish(key)
+		end)
+	end
+
+	function KeySystem:_getKeyLink()
+		if self._busy or self._resolved then
+			return
+		end
+		self:_setBusy(true)
+		self:_setStatus("Requesting a key link...", "Accent")
+		task.spawn(function()
+			local link, message = self:_requestLink()
+			if self._destroyed then
+				return
+			end
+			self:_setBusy(false)
+			if not link then
+				self:_setStatus(message or "Could not request a key link.", "Error")
+				return
+			end
+			self._link.Text = link
+			self._link.Visible = true
+			if copyToClipboard(link) then
+				self:_setStatus("Link copied to your clipboard.", "Success")
+			else
+				self:_setStatus("Open the link below to get a key.", "Accent")
+			end
+		end)
+	end
+
+	function KeySystem:_finish(key)
+		if self._resolved then
+			return
+		end
+		self._resolved = true
+		self._result = key
+		safeCall(self.OnSubmit, key)
+		self:_close()
+	end
+
+	function KeySystem:_close()
+		if self._destroyed then
+			return
+		end
+		self._destroyed = true
+		local gui = self.Gui
+		if gui then
+			if self._card then
+				tween(self._card, { BackgroundTransparency = 1 }, Motion.Quick)
+			end
+			if self._backdrop then
+				tween(self._backdrop, { BackgroundTransparency = 1 }, Motion.Quick)
+			end
+			task.delay(0.2, function()
+				gui:Destroy()
+			end)
+		end
+	end
+
+	function KeySystem:Cancel()
+		if self._resolved then
+			return
+		end
+		self._resolved = true
+		self._result = nil
+		safeCall(self.OnCancel)
+		self:_close()
+	end
+
+	function KeySystem:Destroy()
+		self._resolved = true
+		self:_close()
+	end
+
+	function KeySystem:Prompt()
+		if self._resolved then
+			return self._result
+		end
+		if self._prompting then
+			repeat
+				task.wait()
+			until self._resolved
+			return self._result
+		end
+		self._prompting = true
+		-- A remembered key skips the card without a network check: JNKIE's own guidance is
+		-- to let the protected loader make the final call, and check_key can record a first
+		-- use that the loader would then reject.
+		if self.AutoResume then
+			local saved = self:Read()
+			if saved then
+				self._resolved = true
+				self._result = saved
+				return saved
+			end
+		end
+		self:_build()
+		repeat
+			task.wait()
+		until self._resolved
+		return self._result
+	end
+end
+	end)()
 	-- src/window/backdrop.lua
 	modules["window/backdrop"] = (function()
 -- Backdrop dimming and the weather particle engine (rain, snow, embers, sakura, ...).
@@ -21742,6 +22455,7 @@ end
 -- Generated from work/library-minified.lua by work/refactor/split.mjs; see src/README.md.
 return function(ctx)
 	local Container = ctx.Container
+	local KeySystem = ctx.KeySystem
 	local Library = ctx.Library
 	local RunService = ctx.Services.RunService
 	local Window = ctx.Window
@@ -21818,7 +22532,9 @@ return function(ctx)
 			local cm = select(cl, ...)
 			if type(cm) == "table" and not wrappedTables[cm] then
 				local cn = getmetatable(cm)
-				if cn ~= Window and cn ~= Container then
+				-- KeySystem:Prompt yields until the user answers, so re-dispatching it through
+				-- Heartbeat would block the frame it is waiting on.
+				if cn ~= Window and cn ~= Container and cn ~= KeySystem then
 					wrappedTables[cm] = true
 					for co, cp in pairs(cm) do
 						if type(co) == "string" and type(cp) == "function" and co:sub(1, 1) ~= "_" then
@@ -21867,6 +22583,7 @@ local MODULE_ORDER = {
 	"window/chrome",
 	"window/search_home",
 	"window/dialogs_notify",
+	"window/keysystem",
 	"window/backdrop",
 	"window/minibar",
 	"core/trusted",
