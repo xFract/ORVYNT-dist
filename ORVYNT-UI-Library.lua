@@ -1,4 +1,4 @@
--- ORVYN UI Library (OuroFlow), single-file bundle built from src/ by build/bundle.mjs.
+-- ORVYNT UI Library, single-file bundle built from src/ by build/bundle.mjs.
 local BundledSteelIcons = (function()
 -- Bundled Lucide icon set: icon name -> rbxassetid. Read by assets/icons_fonts through
 -- the BundledSteelIcons upvalue that build/bundle.mjs defines around the library.
@@ -2782,16 +2782,16 @@ return function(ctx)
 	function Library:LoadFont(options)
 		options = ctx.ControlBase.normalizeOptions(options, {})
 		if type(writefile) ~= "function" or type(isfile) ~= "function" or typeof(getcustomasset) ~= "function" then
-			warn([[[OuroFlow] custom fonts need writefile, isfile and getcustomasset]])
+			warn([[[ORVYNT] custom fonts need writefile, isfile and getcustomasset]])
 			return false
 		end
 		local w = options.Name or "CustomFont"
 		local x = options.Weights or knownFontWeights[w]
 		if type(x) ~= "table" then
-			warn("[OuroFlow] no font weights for " .. w)
+			warn("[ORVYNT] no font weights for " .. w)
 			return false
 		end
-		local y = options.Folder or "OuroFlowFonts"
+		local y = options.Folder or "ORVYNTFonts"
 		pcall(function()
 			if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(y) then
 				makefolder(y)
@@ -2811,7 +2811,7 @@ return function(ctx)
 				if E then
 					table.insert(z, { name = A, weight = C[1], style = "normal", assetId = getcustomasset(D) })
 				else
-					warn("[OuroFlow] could not download " .. A .. " weight of " .. w)
+					warn("[ORVYNT] could not download " .. A .. " weight of " .. w)
 				end
 			end
 		end
@@ -2882,7 +2882,7 @@ return function(ctx)
 		elseif type(B) == "string" then
 			return B
 		end
-		warn("[OuroFlow] unknown lucide icon: " .. z)
+		warn("[ORVYNT] unknown lucide icon: " .. z)
 		return nil
 	end
 	local chevronIconName = "chevron-right"
@@ -2924,11 +2924,11 @@ return function(ctx)
 		if type(writefile) ~= "function" or typeof(getcustomasset) ~= "function" then
 			return
 		end
-		local D = "AirFlowAssets"
+		local D = "ORVYNTAssets"
 		if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(D) then
 			makefolder(D)
 		end
-		local E = D .. "/OuroFlowLogo_v" .. LOGO_ASSET_VERSION .. ".png"
+		local E = D .. "/ORVYNTLogo_v" .. LOGO_ASSET_VERSION .. ".png"
 		local F = decodeLogoBase64(logoPngBase64)
 		local G = type(isfile) == "function" and type(readfile) == "function" and isfile(E) and readfile(E) == F
 		if not G then
@@ -3451,7 +3451,7 @@ return function(ctx)
 		end
 		local ok, aM = pcall(aK, ...)
 		if not ok then
-			warn("[OuroFlow] callback error: " .. tostring(aM))
+			warn("[ORVYNT] callback error: " .. tostring(aM))
 		end
 	end
 	local function callAsync(aL)
@@ -4581,7 +4581,7 @@ return function(ctx)
 					if aY and aZ ~= nil then
 						aU.Text = Library._rich(aZ)
 					elseif not aY then
-						warn("[OuroFlow] label update error: " .. tostring(aZ))
+						warn("[ORVYNT] label update error: " .. tostring(aZ))
 					end
 					task.wait(aW)
 				end
@@ -10810,7 +10810,7 @@ return function(ctx)
 						end
 						cf(true)
 					else
-						warn("[OuroFlow] status update error: " .. tostring(cj))
+						warn("[ORVYNT] status update error: " .. tostring(cj))
 					end
 					task.wait(cg)
 				end
@@ -11139,7 +11139,7 @@ return function(ctx)
 								b8:Set(cm)
 							end
 						else
-							warn("[OuroFlow] status list update error: " .. tostring(cm))
+							warn("[ORVYNT] status list update error: " .. tostring(cm))
 						end
 					end
 					task.wait(cg)
@@ -11300,7 +11300,7 @@ return function(ctx)
 				return false, "replaced by a newer image"
 			end
 			if not b4 then
-				warn("[OuroFlow] image: " .. tostring(b5))
+				warn("[ORVYNT] image: " .. tostring(b5))
 				return false, b5
 			end
 			b_.ImageTransparency = 1
@@ -12936,10 +12936,10 @@ return function(ctx)
 		if type(a4) ~= "table" then
 			return nil
 		end
-		if type(a4.__AirFlowWindows) ~= "table" then
-			a4.__AirFlowWindows = {}
+		if type(a4.__ORVYNTWindows) ~= "table" then
+			a4.__ORVYNTWindows = {}
 		end
-		return a4.__AirFlowWindows
+		return a4.__ORVYNTWindows
 	end
 	function Library.Window(a3, options)
 		options = normalizeOptions(options, { Name = "Title", LoadingSubtitle = "Subtitle", ToggleUIKeybind = "Keybind" })
@@ -12964,7 +12964,7 @@ return function(ctx)
 				Minimized = false,
 				_hideName = false,
 				_hideAvatar = false,
-				Title = options.Title or "Airflow",
+				Title = options.Title or "ORVYNT",
 				_logoIcon = options.Icon or Assets.Logo,
 				_sessionStart = os.clock(),
 				_islandLocked = options.IslandDraggable == false,
@@ -12972,8 +12972,8 @@ return function(ctx)
 			Window
 		)
 		local a8 = type(options.ConfigurationSaving) == "table" and options.ConfigurationSaving or {}
-		a7.ConfigFolder = a8.FolderName or "AirflowUI"
-		a7._registryKey = "AirFlow:" .. tostring(a7.ConfigFolder) .. ":" .. tostring(options.Title or "Airflow")
+		a7.ConfigFolder = a8.FolderName or "ORVYNTUI"
+		a7._registryKey = "ORVYNT:" .. tostring(a7.ConfigFolder) .. ":" .. tostring(options.Title or "ORVYNT")
 		local a9 = Library._registry()
 		if a9 then
 			local ba = a9[a7._registryKey]
@@ -13022,7 +13022,7 @@ return function(ctx)
 		local bd = create(
 			"ScreenGui",
 			{
-				Name = options.Name or "AirflowUI",
+				Name = options.Name or "ORVYNTUI",
 				IgnoreGuiInset = true,
 				ResetOnSpawn = false,
 				DisplayOrder = 999,
@@ -13636,7 +13636,7 @@ return function(ctx)
 			Position = UDim2.fromOffset(28, 0),
 			Size = UDim2.new(0, 0, 1, 0),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Text = a7.Title or "Airflow",
+			Text = a7.Title or "ORVYNT",
 			TextSize = Type.Body,
 			TextTruncate = Enum.TextTruncate.None,
 			ZIndex = 31,
@@ -14140,7 +14140,7 @@ return function(ctx)
 	function Container:SetBadge()
 		if not Library._badgeWarned then
 			Library._badgeWarned = true
-			warn("[OuroFlow] Tab:SetBadge was removed and does nothing")
+			warn("[ORVYNT] Tab:SetBadge was removed and does nothing")
 		end
 	end
 	function Container:GetBadge()
@@ -14607,7 +14607,7 @@ return function(ctx)
 			end
 		end)
 		if not ok then
-			warn([[[OuroFlow] unload animation failed, removing the window directly: ]] .. tostring(ch))
+			warn([[[ORVYNT] unload animation failed, removing the window directly: ]] .. tostring(ch))
 			cf()
 			return
 		end
@@ -14725,7 +14725,7 @@ return function(ctx)
 		return PromptStore.Write(aX, aZ, a0 .. aY .. "\n")
 	end
 	local configVersion = 1
-	local configCodePrefix = "airflow:"
+	local configCodePrefix = "orvynt:"
 	local function configPath(ba, bb)
 		return ba.ConfigFolder .. "/" .. bb .. ".json"
 	end
@@ -16378,7 +16378,7 @@ return function(ctx)
 		local bo = createLabel({
 			Position = UDim2.fromOffset(bn, bc - 2),
 			Size = UDim2.new(1, -(bn + 70), 0, 18),
-			Text = a7.LoadingTitle or a7.Title or "Airflow",
+			Text = a7.LoadingTitle or a7.Title or "ORVYNT",
 			TextSize = Type.Title,
 			FontFace = Fonts.Bold,
 			Parent = bl,
@@ -19889,7 +19889,7 @@ end
 	end)()
 	-- src/window/keysystem.lua
 	modules["window/keysystem"] = (function()
--- Key system gate: a standalone ORVYN card that collects a key, optionally checks it
+-- Key system gate: a standalone ORVYNT card that collects a key, optionally checks it
 -- through the JNKIE public SDK, and remembers it between sessions.
 --
 -- The gate is deliberately not a Window: JNKIE's inline-UI mode runs this code before
@@ -20105,7 +20105,7 @@ return function(ctx)
 			CancelText = options.CancelText or "Cancel",
 			GetKeyText = options.GetKeyText or "Get Key",
 			Icon = options.Icon,
-			Folder = options.Folder or "ORVYN",
+			Folder = options.Folder or "ORVYNT",
 			Remember = options.Remember ~= false,
 			-- Same styles as the Window: Outline, Brackets, Ghost, Frame, Off.
 			DragStyle = options.DragStyle or "Outline",
@@ -20466,7 +20466,7 @@ return function(ctx)
 		local gui = create(
 			"ScreenGui",
 			{
-				Name = "ORVYNKeySystem",
+				Name = "ORVYNTKeySystem",
 				IgnoreGuiInset = true,
 				ResetOnSpawn = false,
 				DisplayOrder = 1000,
@@ -23181,7 +23181,7 @@ return function(ctx)
 		while ck == nil do
 			if os.clock() > cm then
 				cl = true
-				error("[OuroFlow] trusted call timed out", 0)
+				error("[ORVYNT] trusted call timed out", 0)
 			end
 			task.wait()
 		end
