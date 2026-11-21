@@ -19902,6 +19902,7 @@ return function(ctx)
 	local Fonts = ctx.Fonts
 	local Theme = ctx.Theme
 	local Library = ctx.Library
+	local Assets = ctx.Assets
 	local UserInputService = ctx.Services.UserInputService
 	local copyToClipboard = ctx.Env.copyToClipboard
 	local addCorner = ctx.UI.addCorner
@@ -20453,6 +20454,7 @@ return function(ctx)
 				Size = UDim2.new(1, 0, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
+				ClipsDescendants = true,
 				LayoutOrder = 2,
 				Parent = content,
 			}
@@ -20813,6 +20815,22 @@ return function(ctx)
 			)
 			addCorner(toggle, UDim.new(1, 0))
 			addStroke(toggle, Theme.Stroke)
+			-- The library's Toggle control fades a soft accent halo in behind the pill as
+			-- it turns on. Sized to the row's padding so it cannot spill past the row.
+			local glow = create(
+				"ImageLabel",
+				{
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.new(1, 20, 1, 20),
+					BackgroundTransparency = 1,
+					Image = Assets.Glow,
+					ImageColor3 = Theme.Accent,
+					ImageTransparency = 1,
+					ZIndex = 0,
+					Parent = toggle,
+				}
+			)
 			local knob = create(
 				"Frame",
 				{
@@ -20825,19 +20843,36 @@ return function(ctx)
 				}
 			)
 			addCorner(knob, UDim.new(1, 0))
-			local function paintToggle(on)
-				tween(toggle, { BackgroundColor3 = on and Theme.Accent or Theme.Surface3 }, Motion.Calm)
+			-- Same choreography as the library's Toggle: fill, halo and knob travel
+			-- together over Motion.Calm with Back easing, and a click also stretches the
+			-- knob along its travel before it settles back to a circle.
+			local KNOB_SIZE = 13
+			local KNOB_OFF_X = 3
+			local KNOB_ON_X = 16
+			local function paintToggle(on, animate)
+				local duration = animate and Motion.Calm or Motion.Instant
+				tween(toggle, { BackgroundColor3 = on and Theme.Accent or Theme.Surface3 }, duration)
+				tween(glow, { ImageTransparency = on and 0.75 or 1 }, duration)
 				tween(
 					knob,
 					{
-						Position = on and UDim2.new(0, 16, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+						Position = on and UDim2.new(0, KNOB_ON_X, 0.5, 0) or UDim2.new(0, KNOB_OFF_X, 0.5, 0),
 						BackgroundColor3 = on and Theme.AccentDark or Theme.Muted,
 					},
-					Motion.Calm,
+					duration,
 					Enum.EasingStyle.Back
 				)
+				if animate then
+					tween(knob, { Size = UDim2.fromOffset(KNOB_SIZE + 4, KNOB_SIZE - 2) }, Motion.Fast)
+					task.delay(0.08, function()
+						if self._destroyed then
+							return
+						end
+						tween(knob, { Size = UDim2.fromOffset(KNOB_SIZE, KNOB_SIZE) }, Motion.Base, Enum.EasingStyle.Back)
+					end)
+				end
 			end
-			paintToggle(self.SkipWhenValid)
+			paintToggle(self.SkipWhenValid, false)
 			toggleRow.MouseEnter:Connect(function()
 				tween(toggleStroke, { Color = Theme.StrokeHover }, Motion.Fast)
 			end)
@@ -20846,14 +20881,18 @@ return function(ctx)
 			end)
 			toggleRow.MouseButton1Click:Connect(function()
 				self.SkipWhenValid = not self.SkipWhenValid
-				paintToggle(self.SkipWhenValid)
+				paintToggle(self.SkipWhenValid, true)
 				self:SaveSettings({ SkipWhenValid = self.SkipWhenValid and "1" or "0" })
 			end)
 		end
 		local pages = { key = keyPage, settings = settingsPage }
 		self._page = "key"
-		-- Fade the page you are leaving, then swap and fade the new one in. That order
-		-- keeps the card from being as tall as both pages at once.
+		-- The pages share one slot, so the swap is a fade plus a short slide: the page
+		-- you leave drifts up and out, the one you enter rises into place. The slot is
+		-- pinned to an explicit height for the duration, because AutomaticSize.Y follows
+		-- a child's position offset and would otherwise grow and shrink as the page
+		-- moves. Pinning also lets the slot ease between the two page heights instead of
+		-- snapping when the pages differ.
 		local function showPage(name, animate)
 			local to = pages[name]
 			if not to or self._page == name then
@@ -20861,6 +20900,8 @@ return function(ctx)
 			end
 			local from = pages[self._page]
 			self._page = name
+			self._pageGeneration = (self._pageGeneration or 0) + 1
+			local generation = self._pageGeneration
 			titleLabel.Text = name == "settings" and "Settings" or self.Title
 			if pageIcon then
 				setIcon(pageIcon, name == "settings" and "arrow-left" or "settings")
@@ -20871,23 +20912,42 @@ return function(ctx)
 				end)
 			end
 			if not animate or not from then
+				pageHost.AutomaticSize = Enum.AutomaticSize.Y
+				pageHost.Size = UDim2.new(1, 0, 0, 0)
 				if from then
 					from.Visible = false
 					from.GroupTransparency = 1
+					from.Position = UDim2.fromOffset(0, 0)
 				end
 				to.Visible = true
 				to.GroupTransparency = 0
+				to.Position = UDim2.fromOffset(0, 0)
 				return
 			end
-			tween(from, { GroupTransparency = 1 }, Motion.Fast)
-			task.delay(Motion.Fast, function()
-				if self._destroyed then
+			local fromHeight = from.AbsoluteSize.Y
+			local toHeight = to.AbsoluteSize.Y
+			pageHost.AutomaticSize = Enum.AutomaticSize.None
+			pageHost.Size = UDim2.new(1, 0, 0, fromHeight)
+			tween(from, { GroupTransparency = 1, Position = UDim2.fromOffset(0, -6) }, Motion.Base, Enum.EasingStyle.Quint)
+			tween(pageHost, { Size = UDim2.new(1, 0, 0, toHeight) }, Motion.Base, Enum.EasingStyle.Quint)
+			task.delay(Motion.Base, function()
+				if self._destroyed or self._pageGeneration ~= generation then
 					return
 				end
 				from.Visible = false
+				from.GroupTransparency = 1
+				from.Position = UDim2.fromOffset(0, 0)
 				to.Visible = true
 				to.GroupTransparency = 1
-				tween(to, { GroupTransparency = 0 }, Motion.Base)
+				to.Position = UDim2.fromOffset(0, 10)
+				tween(to, { GroupTransparency = 0, Position = UDim2.fromOffset(0, 0) }, Motion.Slow, Enum.EasingStyle.Quint)
+				task.delay(Motion.Slow, function()
+					if self._destroyed or self._pageGeneration ~= generation then
+						return
+					end
+					pageHost.AutomaticSize = Enum.AutomaticSize.Y
+					pageHost.Size = UDim2.new(1, 0, 0, 0)
+				end)
 			end)
 		end
 		self._showPage = showPage
