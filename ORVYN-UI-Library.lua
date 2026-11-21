@@ -20386,6 +20386,8 @@ return function(ctx)
 				Parent = content,
 			}
 		)
+		-- Matches the page inset so the title lines up with the fields below it.
+		addPadding(header, Space.Hairline, Space.Hairline, 0, 0)
 		local titleOffset = 0
 		if self.Icon then
 			createIcon(header, self.Icon, Theme.Accent, UDim2.new(0, 0, 0.5, 0))
@@ -20451,7 +20453,6 @@ return function(ctx)
 				Size = UDim2.new(1, 0, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
-				ClipsDescendants = true,
 				LayoutOrder = 2,
 				Parent = content,
 			}
@@ -20466,6 +20467,10 @@ return function(ctx)
 				Parent = pageHost,
 			}
 		)
+		-- A CanvasGroup clips at its own bounds, and a UIStroke draws half its width
+		-- outside the frame. Without this inset the left and right borders of the input
+		-- field and the toggle row are shaved off where they meet the page edge.
+		addPadding(keyPage, Space.Hairline, Space.Hairline, 0, 0)
 		create(
 			"UIListLayout",
 			{
@@ -20705,6 +20710,7 @@ return function(ctx)
 					Parent = pageHost,
 				}
 			)
+			addPadding(settingsPage, Space.Hairline, Space.Hairline, 0, 0)
 			create(
 				"UIListLayout",
 				{
