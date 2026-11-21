@@ -16917,6 +16917,7 @@ return function(ctx)
 
 	ctx.Chrome = {
 		isOnScreen = isOnScreen,
+		createDragPreview = createDragPreview,
 	}
 end
 	end)()
@@ -19903,6 +19904,7 @@ return function(ctx)
 	local Theme = ctx.Theme
 	local Library = ctx.Library
 	local Assets = ctx.Assets
+	local RunService = ctx.Services.RunService
 	local UserInputService = ctx.Services.UserInputService
 	local copyToClipboard = ctx.Env.copyToClipboard
 	local addCorner = ctx.UI.addCorner
@@ -19912,6 +19914,10 @@ return function(ctx)
 	local createIcon = ctx.UI.createIcon
 	local createLabel = ctx.UI.createLabel
 	local getGuiRoot = ctx.UI.getGuiRoot
+	local getMousePosition = ctx.UI.getMousePosition
+	local isPressInput = ctx.UI.isPressInput
+	local pointInFrame = ctx.UI.pointInFrame
+	local createDragPreview = ctx.Chrome.createDragPreview
 	local safeCall = ctx.UI.safeCall
 	local setIcon = ctx.Icons.setIcon
 	local tween = ctx.UI.tween
@@ -20101,6 +20107,8 @@ return function(ctx)
 			Icon = options.Icon,
 			Folder = options.Folder or "ORVYN",
 			Remember = options.Remember ~= false,
+			-- Same styles as the Window: Outline, Brackets, Ghost, Frame, Off.
+			DragStyle = options.DragStyle or "Outline",
 			-- true skips the card on a saved key, "validate" skips it only when the key
 			-- still passes, false always shows the card. The string has to survive this
 			-- line, so it is checked before the boolean coercion.
@@ -20315,6 +20323,143 @@ return function(ctx)
 		if self._input then
 			self._input.TextEditable = not self._busy
 		end
+	end
+
+	-- Same drag as the library's Window: a press inside the card that is not on a
+	-- control starts a grab, an outline preview follows the pointer while the card
+	-- itself stays put, and the drop tweens the card to where the outline was left.
+	function KeySystem:_enableDrag()
+		local card = self._card
+		local gui = self.Gui
+		if not card or not gui then
+			return
+		end
+		local dragging, moved = false, false
+		local grabOffset, pressAt = Vector2.zero, Vector2.zero
+		local preview, closePreview = nil, nil
+		local connections = {}
+		self._dragConnections = connections
+
+		-- The card is anchored at its centre, so the offset from the press to the centre
+		-- is the part that stays fixed while the pointer moves.
+		local function centre()
+			return card.AbsolutePosition + card.AbsoluteSize * card.AnchorPoint - gui.AbsolutePosition
+		end
+		local function clampedCentre(point)
+			local viewport = gui.AbsoluteSize
+			local half = card.AbsoluteSize / 2
+			return Vector2.new(
+				math.clamp(point.X, math.min(half.X, viewport.X / 2), math.max(viewport.X - half.X, viewport.X / 2)),
+				math.clamp(point.Y, math.min(half.Y, viewport.Y / 2), math.max(viewport.Y - half.Y, viewport.Y / 2))
+			)
+		end
+		-- A control on the hidden page still has bounds, so a press there must not be
+		-- treated as landing on it. Walk up to the card checking visibility and clipping,
+		-- the same test the Window uses before it lets a control keep the press.
+		local function reachable(inst, point)
+			local node = inst
+			while node and node ~= card and node:IsA("GuiObject") do
+				if not node.Visible then
+					return false
+				end
+				local parent = node.Parent
+				if
+					parent
+					and parent ~= card
+					and parent:IsA("GuiObject")
+					and (parent.ClipsDescendants or parent:IsA("ScrollingFrame"))
+					and not pointInFrame(point, parent)
+				then
+					return false
+				end
+				node = parent
+			end
+			return true
+		end
+		local controls = {}
+		for _, inst in ipairs(card:GetDescendants()) do
+			if inst:IsA("GuiButton") or inst:IsA("TextBox") or inst:GetAttribute("NoDrag") then
+				table.insert(controls, inst)
+			end
+		end
+		local function overControl(point)
+			for _, inst in ipairs(controls) do
+				if inst.Parent and pointInFrame(point, inst) and reachable(inst, point) then
+					return true
+				end
+			end
+			return false
+		end
+		local function drop()
+			if not preview then
+				return
+			end
+			local point = clampedCentre(Vector2.new(preview.Position.X.Offset, preview.Position.Y.Offset))
+			if self._clampTween then
+				self._clampTween:Cancel()
+			end
+			self._clampTween = tween(card, { Position = UDim2.fromOffset(point.X, point.Y) }, Motion.Slow, Enum.EasingStyle.Quint)
+			closePreview()
+			preview, closePreview = nil, nil
+		end
+		table.insert(
+			connections,
+			UserInputService.InputBegan:Connect(function(input_)
+				if not isPressInput(input_) or self._destroyed or not card.Visible then
+					return
+				end
+				local point = getMousePosition()
+				if not pointInFrame(point, card) or overControl(point) then
+					return
+				end
+				-- The open animation also drives Position, so stop it before the drop tween
+				-- takes over or the two would fight for the same property.
+				if self._openTween then
+					self._openTween:Cancel()
+					self._openTween = nil
+					card.BackgroundTransparency = 0
+				end
+				if self._clampTween then
+					self._clampTween:Cancel()
+					self._clampTween = nil
+				end
+				dragging, moved = true, false
+				pressAt = point
+				grabOffset = point - centre()
+			end)
+		)
+		table.insert(
+			connections,
+			UserInputService.InputEnded:Connect(function(input_)
+				if not dragging or not isPressInput(input_) then
+					return
+				end
+				dragging = false
+				drop()
+			end)
+		)
+		table.insert(
+			connections,
+			RunService.RenderStepped:Connect(function(delta)
+				if not dragging then
+					return
+				end
+				local point = getMousePosition()
+				-- A few pixels of slop so a click on the card is not a one-pixel drag.
+				if not moved and (point - pressAt).Magnitude > 3 then
+					moved = true
+					preview, closePreview = createDragPreview({ Root = card, DragStyle = self.DragStyle, Gui = gui })
+				end
+				if not moved then
+					return
+				end
+				local goal = point - grabOffset
+				local alpha = 1 - math.exp(-delta * 45)
+				local current = Vector2.new(preview.Position.X.Offset, preview.Position.Y.Offset)
+				local nextCentre = current:Lerp(goal, alpha)
+				preview.Position = UDim2.fromOffset(nextCentre.X, nextCentre.Y)
+			end)
+		)
 	end
 
 	function KeySystem:_build()
@@ -20962,8 +21107,9 @@ return function(ctx)
 			input.Text = saved
 			applyMask()
 		end
+		self:_enableDrag()
 		tween(backdrop, { BackgroundTransparency = 0.45 }, Motion.Calm)
-		tween(card, { BackgroundTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, Motion.Slow, Enum.EasingStyle.Quint)
+		self._openTween = tween(card, { BackgroundTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, Motion.Slow, Enum.EasingStyle.Quint)
 		tween(cardStroke, { Transparency = 0 }, Motion.Calm)
 		tween(scale, { Scale = 1 }, Motion.Enter, Enum.EasingStyle.Back)
 		task.defer(function()
@@ -21049,6 +21195,12 @@ return function(ctx)
 			return
 		end
 		self._destroyed = true
+		for _, connection in ipairs(self._dragConnections or {}) do
+			pcall(function()
+				connection:Disconnect()
+			end)
+		end
+		self._dragConnections = nil
 		local gui = self.Gui
 		if gui then
 			if self._card then
