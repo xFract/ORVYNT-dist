@@ -1825,8 +1825,12 @@ return function(ctx)
 	local Stats = game:GetService("Stats")
 	local LocalPlayer = Players.LocalPlayer
 	local Library = {}
+	Library.Version = "1.1.0"
 	Library.Flags = {}
 	Library.Windows = {}
+	Library.PremiumControls = {}
+	Library.PremiumAccess = true
+	Library.PremiumLockReason = "Premium only"
 	Library.Tokens = ctx.Tokens
 	Library.Type = ctx.Type
 	Library.Motion = ctx.Motion
@@ -3948,10 +3952,17 @@ return function(ctx)
 	local Motion = ctx.Motion
 	local Library = ctx.Library
 	local Theme = ctx.Theme
+	local Radius = ctx.Radius
+	local Space = ctx.Space
+	local Type = ctx.Type
 	local addCorner = ctx.UI.addCorner
+	local addPadding = ctx.UI.addPadding
 	local create = ctx.UI.create
+	local createLabel = ctx.UI.createLabel
 	local safeCall = ctx.UI.safeCall
+	local setIcon = ctx.Icons.setIcon
 	local tween = ctx.UI.tween
+	local bindTheme = ctx.ThemeEngine.bindTheme
 
 	local function normalizeOptions(m, n)
 		local o = {}
@@ -4045,6 +4056,27 @@ return function(ctx)
 			p._dependsMode = o.DependsMode
 			p:SetDependsOn(o.DependsOn)
 		end
+		p._premium = o.Premium == true
+		p._locked = o.Locked == true or (n ~= nil and n._locked == true)
+		p._lockReason = o.LockReason
+		p._onLockedClick = o.OnLockedClick
+		if p._premium then
+			table.insert(Library.PremiumControls, p)
+		end
+		function p:SetLocked(u, v)
+			p._locked = u == true
+			if v ~= nil then
+				p._lockReason = tostring(v)
+			end
+			Library._refreshLock(p)
+			return p._premiumLocked == true
+		end
+		function p:IsLocked()
+			return p._premiumLocked == true
+		end
+		function p:SetLockReason(u)
+			p._lockReason = u ~= nil and tostring(u) or nil
+		end
 		function p:SetTooltip(u)
 			p._tooltip = u
 			if q and s and not p._tooltipBound then
@@ -4079,12 +4111,21 @@ return function(ctx)
 			if o.Flag and Library.Flags[o.Flag] == p then
 				Library.Flags[o.Flag] = nil
 			end
+			if p._premium then
+				local u = table.find(Library.PremiumControls, p)
+				if u then
+					table.remove(Library.PremiumControls, u)
+				end
+			end
 			if s then
 				s._controlsDirty = true
 			end
 			if q then
 				q:Destroy()
 			end
+		end
+		if p._premium or p._locked then
+			Library._refreshLock(p)
 		end
 		return p
 	end
@@ -4210,7 +4251,7 @@ return function(ctx)
 		if not by then
 			return
 		end
-		local bA = bx.Disabled or bx._dependDisabled == true
+		local bA = bx.Disabled or bx._dependDisabled == true or bx._premiumLocked == true
 		if bA == (bx._covered == true) then
 			return
 		end
@@ -4241,6 +4282,9 @@ return function(ctx)
 			)
 			bB:SetAttribute("NoDrag", true)
 			addCorner(bB)
+			bB.MouseButton1Click:Connect(function()
+				Library._lockedClick(bx)
+			end)
 			bx._cover = bB
 		end
 		bx._coverGeneration = (bx._coverGeneration or 0) + 1
@@ -4256,6 +4300,215 @@ return function(ctx)
 				end
 			end)
 		end
+	end
+	local textOnlyTypes = { Label = true, Paragraph = true, Section = true, Divider = true }
+	local function eachText(frame, fn)
+		if frame:IsA("TextLabel") or frame:IsA("TextBox") then
+			fn(frame)
+		end
+		for _, descendant in ipairs(frame:GetDescendants()) do
+			if descendant:IsA("TextLabel") or descendant:IsA("TextBox") then
+				fn(descendant)
+			end
+		end
+	end
+	local function lockTextInput(control)
+		local frame = control._frame
+		if not frame then
+			return
+		end
+		local saved = control._lockEditable
+		if not saved then
+			saved = {}
+			control._lockEditable = saved
+		end
+		eachText(frame, function(descendant)
+			if descendant:IsA("TextBox") then
+				if saved[descendant] == nil then
+					saved[descendant] = descendant.TextEditable
+				end
+				descendant.TextEditable = false
+				if descendant:IsFocused() then
+					descendant:ReleaseFocus()
+				end
+			end
+		end)
+	end
+	local function unlockTextInput(control)
+		local saved = control._lockEditable
+		if not saved then
+			return
+		end
+		for instance, editable in pairs(saved) do
+			if instance.Parent then
+				instance.TextEditable = editable
+			end
+		end
+		control._lockEditable = nil
+	end
+	function Library._lockReason(control)
+		return control._lockReason or Library.PremiumLockReason or "Premium only"
+	end
+	function Library._lockedClick(control)
+		if control._premiumLocked ~= true then
+			return
+		end
+		if type(control._onLockedClick) == "function" then
+			safeCall(control._onLockedClick, control)
+			return
+		end
+		local now = os.clock()
+		if now - (control._lockNotifyAt or 0) < 1.5 then
+			return
+		end
+		control._lockNotifyAt = now
+		Library:Notify({
+			Title = "Premium",
+			Content = Library._lockReason(control),
+			Type = "Warning",
+			Duration = 3,
+		})
+	end
+	function Library._createLockBadge(parent, height, width)
+		local badge = create(
+			"Frame",
+			{
+				Name = "PremiumBadge",
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -10, 0.5, 0),
+				Size = width and UDim2.fromOffset(width, height) or UDim2.fromOffset(0, height),
+				AutomaticSize = width and Enum.AutomaticSize.None or Enum.AutomaticSize.X,
+				BackgroundColor3 = Theme.Surface3,
+				BackgroundTransparency = 0.15,
+				BorderSizePixel = 0,
+				Visible = false,
+				ZIndex = 21,
+				Parent = parent,
+			}
+		)
+		badge:SetAttribute("NoDrag", true)
+		addCorner(badge, UDim.new(1, 0))
+		addPadding(badge, Space.Snug, Space.Cozy, Space.None, Space.None)
+		create(
+			"UIListLayout",
+			{
+				FillDirection = Enum.FillDirection.Horizontal,
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 4),
+				Parent = badge,
+			}
+		)
+		local icon = create(
+			"ImageLabel",
+			{
+				Size = UDim2.fromOffset(12, 12),
+				BackgroundTransparency = 1,
+				ImageColor3 = Theme.Warning,
+				ScaleType = Enum.ScaleType.Fit,
+				LayoutOrder = 1,
+				Parent = badge,
+			}
+		)
+		setIcon(icon, "lock")
+		local label = createLabel({
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Text = "Premium",
+			TextSize = Type.Caption,
+			TextColor3 = Theme.Muted,
+			TextTruncate = Enum.TextTruncate.None,
+			LayoutOrder = 2,
+			Parent = badge,
+		})
+		bindTheme(badge, function()
+			badge.BackgroundColor3 = Theme.Surface3
+			icon.ImageColor3 = Theme.Warning
+			label.TextColor3 = Theme.Muted
+		end)
+		return badge
+	end
+	function Library._paintLock(control)
+		local frame = control._frame
+		if not frame then
+			return
+		end
+		local locked = control._premiumLocked == true
+		if textOnlyTypes[control._type] then
+			if locked then
+				if not control._lockTint then
+					local saved = {}
+					eachText(frame, function(descendant)
+						saved[descendant] = descendant.TextColor3
+						descendant.TextColor3 = Theme.Muted
+					end)
+					control._lockTint = saved
+				end
+			elseif control._lockTint then
+				for instance, color in pairs(control._lockTint) do
+					if instance.Parent then
+						instance.TextColor3 = color
+					end
+				end
+				control._lockTint = nil
+			end
+			return
+		end
+		local cover = control._cover
+		if not cover then
+			return
+		end
+		local badge = cover:FindFirstChild("PremiumBadge")
+		if not locked then
+			if badge then
+				badge.Visible = false
+			end
+			return
+		end
+		if not badge then
+			badge = Library._createLockBadge(cover, 20)
+		end
+		badge.Visible = true
+	end
+	function Library._refreshLock(control)
+		if control._destroyed then
+			return
+		end
+		local locked = control._locked == true or (control._premium == true and Library.PremiumAccess ~= true)
+		if locked == (control._premiumLocked == true) then
+			return
+		end
+		control._premiumLocked = locked or nil
+		if locked then
+			if control._onHide then
+				control._onHide()
+			end
+			if control.Open and type(control.SetOpen) == "function" then
+				control:SetOpen(false)
+			end
+			lockTextInput(control)
+		else
+			unlockTextInput(control)
+		end
+		Library._setDisabled(control, control._frame, control.Disabled)
+		Library._paintLock(control)
+	end
+	function Library:SetPremiumAccess(access, reason)
+		Library.PremiumAccess = access ~= false
+		if reason ~= nil then
+			Library.PremiumLockReason = tostring(reason)
+		end
+		for index = #Library.PremiumControls, 1, -1 do
+			local entry = Library.PremiumControls[index]
+			if entry._destroyed then
+				table.remove(Library.PremiumControls, index)
+			elseif entry._groupbox then
+				entry:_applyLock()
+			else
+				Library._refreshLock(entry)
+			end
+		end
+		return Library.PremiumAccess
 	end
 	function Library._gateButton(bx, by)
 		local bz = by.Callback
@@ -4331,7 +4584,7 @@ return function(ctx)
 				then
 					return
 				end
-				if bC.Disabled or bC._dependDisabled then
+				if bC.Disabled or bC._dependDisabled or bC._premiumLocked then
 					return
 				end
 				bK += 1
@@ -4772,11 +5025,15 @@ return function(ctx)
 			end
 		end
 		createIcon(aX, chevronIconName, aV and Theme.AccentDark or Theme.Muted, UDim2.new(1, -30, 0.5, 0))
+		local control
 		aX.MouseButton1Click:Connect(function()
+			if control and control._premiumLocked then
+				return
+			end
 			playRipple(aX)
 			safeCall(options.Callback)
 		end)
-		return registerControl(self, options, {
+		control = registerControl(self, options, {
 			_title = a0,
 			_titleColor = aZ,
 			_fillHost = aX,
@@ -4784,6 +5041,7 @@ return function(ctx)
 				a0.Text = a2
 			end,
 		}, aX, "Button")
+		return control
 	end
 	function Container:Toggle(options)
 		local aV, aW
@@ -4877,6 +5135,9 @@ return function(ctx)
 		end
 		a0(false)
 		aV.MouseButton1Click:Connect(function()
+			if a_._premiumLocked then
+				return
+			end
 			a1 = true
 			a_:Set(not a_.Value)
 			a1 = false
@@ -4999,10 +5260,14 @@ return function(ctx)
 			tween(a2, { Color = Theme.StrokeHover }, Motion.Quick)
 			a9(false)
 		end)
+		local control
 		a4.FocusLost:Connect(function(bb)
 			a7 = false
 			tween(a2, { Color = Theme.Stroke }, Motion.Quick)
 			a9(false)
+			if control and control._premiumLocked then
+				return
+			end
 			if options.Numeric then
 				local bc = Library._parseAmount(a4.Text)
 				if not bc then
@@ -5015,7 +5280,7 @@ return function(ctx)
 			end
 			safeCall(options.Callback, a4.Text, bb)
 		end)
-		return registerControl(self, options, {
+		control = registerControl(self, options, {
 			Set = function(bb, bc, bd)
 				local be = a4.Text
 				a4.Text = tostring(bc == nil and "" or bc)
@@ -5043,6 +5308,7 @@ return function(ctx)
 				return a5
 			end or nil,
 		}, aV, "Input")
+		return control
 	end
 	function Container:Stepper(options)
 		local aV, aW, aX, aY, aZ
@@ -5170,6 +5436,9 @@ return function(ctx)
 			local bl = false
 			bj.InputBegan:Connect(function(bm)
 				if not isPressInput(bm) then
+					return
+				end
+				if bd._premiumLocked then
 					return
 				end
 				bl = true
@@ -5600,7 +5869,7 @@ return function(ctx)
 			bh:Set(aV + (aW - aV) * br)
 		end
 		bg.InputBegan:Connect(function(bq)
-			if isPressInput(bq) then
+			if isPressInput(bq) and not bh._premiumLocked then
 				bi = true
 				bh.Dragging = true
 				tween(bf, { Size = UDim2.fromOffset(16, 16) }, Motion.Quick, Enum.EasingStyle.Back)
@@ -6360,6 +6629,9 @@ return function(ctx)
 				end
 			end)
 			b9.MouseButton1Click:Connect(function()
+				if bD._premiumLocked then
+					return
+				end
 				local ci = cg.Option
 				if ci == nil or not ch() then
 					return
@@ -6431,12 +6703,18 @@ return function(ctx)
 			end
 		end
 		bz.MouseButton1Click:Connect(function()
+			if bD._premiumLocked then
+				return
+			end
 			for _, cb in ipairs(bH) do
 				bE[cb] = true
 			end
 			b7()
 		end)
 		bA.MouseButton1Click:Connect(function()
+			if bD._premiumLocked then
+				return
+			end
 			bE = {}
 			b7()
 		end)
@@ -6529,6 +6807,9 @@ return function(ctx)
 			return aX:FindFirstAncestorWhichIsA("ScrollingFrame")
 		end)
 		a7.MouseButton1Click:Connect(function()
+			if bD._premiumLocked then
+				return
+			end
 			if cb() then
 				b6(not bD.Open)
 			end
@@ -6655,6 +6936,9 @@ return function(ctx)
 			end
 		end
 		a1.MouseButton1Click:Connect(function()
+			if a4._premiumLocked then
+				return
+			end
 			a4.Listening = not a4.Listening
 			a6()
 		end)
@@ -6941,6 +7225,9 @@ return function(ctx)
 			br(bs == true)
 		end
 		a0.MouseButton1Click:Connect(function()
+			if bj._premiumLocked then
+				return
+			end
 			br(not bj.Open)
 		end)
 		local function bs(bt)
@@ -6953,14 +7240,14 @@ return function(ctx)
 			bq(0.04)
 		end
 		a5.InputBegan:Connect(function(bu)
-			if isPressInput(bu) then
+			if isPressInput(bu) and not bj._premiumLocked then
 				bn = "sv"
 				tween(a9, { Size = UDim2.fromOffset(18, 18) }, Motion.Base, Enum.EasingStyle.Quint)
 				bs(getMousePosition())
 			end
 		end)
 		bb.InputBegan:Connect(function(bu)
-			if isPressInput(bu) then
+			if isPressInput(bu) and not bj._premiumLocked then
 				bn = "hue"
 				tween(bc, { Size = UDim2.fromOffset(20, 20) }, Motion.Base, Enum.EasingStyle.Quint)
 				bt(getMousePosition())
@@ -6989,6 +7276,9 @@ return function(ctx)
 		end)
 		bh.FocusLost:Connect(function()
 			tween(bf, { Color = Theme.Stroke }, Motion.Quick)
+			if bj._premiumLocked then
+				return
+			end
 			local bu, bv, bw = bh.Text:match("^%s*#?(%x%x)(%x%x)(%x%x)%s*$")
 			if bu then
 				bj:Set(Color3.fromRGB(tonumber(bu, 16), tonumber(bv, 16), tonumber(bw, 16)))
@@ -7884,6 +8174,21 @@ return function(ctx)
 			Container
 		)
 		table.insert(self._groupboxes, b0)
+		local lockBadge = Library._createLockBadge(bQ, 18, 76)
+		lockBadge.Position = UDim2.new(1, -(bU and 66 or 40), 0.5, 0)
+		lockBadge.ZIndex = 3
+		b0._lockBadge = lockBadge
+		b0._lockTitle = bX
+		b0._lockTitleBase = bS + (bU and 66 or 40)
+		b0._premium = bK.Premium == true
+		b0._lockedExplicit = bK.Locked == true
+		b0._lockReason = bK.LockReason
+		if b0._premium then
+			table.insert(Library.PremiumControls, b0)
+		end
+		if b0._premium or b0._lockedExplicit then
+			b0:_applyLock()
+		end
 		if type(b0.Name) == "string" and string.lower(b0.Name:match("^%s*(.-)%s*$")) == "menu" then
 			task.defer(function()
 				if bM._destroyed or bM._minimizeOnStartToggle or not bP.Parent then
@@ -8529,6 +8834,12 @@ return function(ctx)
 			if cx then
 				table.remove(cw._groupboxes, cx)
 			end
+			if b0._premium then
+				local cz = table.find(Library.PremiumControls, b0)
+				if cz then
+					table.remove(Library.PremiumControls, cz)
+				end
+			end
 			bN.Counts[bO] = math.max(bN.Counts[bO] - 1, 0)
 			cv(true)
 			b0._destroyed = true
@@ -8542,6 +8853,44 @@ return function(ctx)
 			task.defer(cu)
 		end
 		return b0
+	end
+	function Library._refreshGroupLock(container)
+		local badge = container._lockBadge
+		if not badge then
+			return
+		end
+		local locked = container._locked == true
+		badge.Visible = locked
+		local title = container._lockTitle
+		if title then
+			title.Size = UDim2.new(1, -(container._lockTitleBase + (locked and 84 or 0)), 1, 0)
+		end
+	end
+	function Container:_applyLock()
+		local locked = self._lockedExplicit == true or (self._premium == true and Library.PremiumAccess ~= true)
+		self._locked = locked or nil
+		for _, item in ipairs(self._items or {}) do
+			if type(item.SetLocked) == "function" then
+				item:SetLocked(locked, self._lockReason)
+			end
+		end
+		for _, box in ipairs(self._groupboxes or {}) do
+			if box ~= self and type(box.SetLocked) == "function" then
+				box:SetLocked(locked, self._lockReason)
+			end
+		end
+		Library._refreshGroupLock(self)
+		return locked
+	end
+	function Container:SetLocked(value, reason)
+		self._lockedExplicit = value == true
+		if reason ~= nil then
+			self._lockReason = tostring(reason)
+		end
+		return self:_applyLock()
+	end
+	function Container:IsLocked()
+		return self._locked == true
 	end
 	local function sideGroupbox(bL)
 		return function(bM, options, bO)
@@ -13002,7 +13351,9 @@ return function(ctx)
 		local function bb(bc)
 			return function(...)
 				for _, be in ipairs(a7._inputListeners[bc]) do
-					be(...)
+					if not (be.owner and be.owner._premiumLocked) then
+						be.fn(...)
+					end
 				end
 			end
 		end
@@ -14148,10 +14499,11 @@ return function(ctx)
 	end
 	function Window:_listen(b_, b0, b1)
 		local b2 = self._inputListeners[b_]
-		table.insert(b2, b0)
+		local b5 = { fn = b0, owner = b1 }
+		table.insert(b2, b5)
 		local function b3()
 			for b4, b6 in ipairs(b2) do
-				if b6 == b0 then
+				if b6 == b5 then
 					table.remove(b2, b4)
 					break
 				end
@@ -14563,6 +14915,12 @@ return function(ctx)
 		for _, cd in pairs(Library.Flags) do
 			if cd._window == self and cd._type == "Toggle" and cd.Value == true then
 				task.spawn(pcall, cd.Set, cd, false)
+			end
+		end
+		for index = #Library.PremiumControls, 1, -1 do
+			local entry = Library.PremiumControls[index]
+			if entry._window == self or entry.Window == self then
+				table.remove(Library.PremiumControls, index)
 			end
 		end
 		local cc = Library._registry()
@@ -17171,6 +17529,9 @@ return function(ctx)
 		end)
 	end
 	function Window:_revealResult(bX)
+		if bX.Target and bX.Target._premiumLocked == true then
+			Library._lockedClick(bX.Target)
+		end
 		local bY, bZ, b_, b0 = bX.Tab, bX.Sub, bX.Target, bX.Group
 		if self.CurrentTab ~= bY then
 			self:SelectTab(bY)
